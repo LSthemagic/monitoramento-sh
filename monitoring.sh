@@ -1,13 +1,11 @@
 #!/bin/bash
 
-
-
 #pega o primeiro  flag digitado pelo user
 OPTION_USER=$1
 EMAIL=""
-
+LOG_FILE="records_log.csv"
 #verifica e instala(caso necessario) pacotes necessarios
-check_downloads(){    
+check_downloads(){
         echo "Verificando downloads..."
         #sudo apt-get update
         # Verifica e instala powertop
@@ -36,27 +34,20 @@ check_downloads(){
                 echo "$(command -v ssmtp)"
         fi
 
-        if ! command -v xprintidle &> /dev/null; then
-                echo "instalando xprintidles"
-                sudo apt-get install -y xprintidle
-        else
-                echo "xprintidle ja instalado"
-                echo "$(command -v xprintidle)"
-        fi
-
-        if ! command -v xset &> /dev/null; then
-                echo "instalando ssmtp"
-                sudo apt-get install -y x11-xserver-utils
-        else
-                echo "xset ja instalado"
-                echo "$(command -v xset)"
-        fi
         if ! command -v systemctl &> /dev/null; then
                 echo "instalando symtemd"
                 sudo apt-get install -y systemd
         else
                 echo "systemd ja instalado"
                 echo "$(command -v systemctl)"
+        fi
+
+        if ! command -v iftop &> /dev/null; then
+                echo "instalando pacote iftop"
+                sudo apt-get install -y iftop
+        else
+                echo "iftop ja instalado"
+                echo "$(command -v iftop)"
         fi
 
 }
@@ -75,22 +66,42 @@ cheks(){
 process_perform(){
         case "$OPTION_USER" in
                 -e) 
-                    monitoring_energy
+                        monitoring_energy
                 ;;
                 --le)
-                    economy_energy
+                        economy_energy
+                ;;
+                -n)
+                        monitoring_network
+                ;;
+                -r)
+                        monitoring_resources
                 ;;
                 -h)
-                    help
+                        help
                 ;;
                 *)
-                    echo "Opção inválida! Use -h para ajuda."
-                    exit 1
+                        echo "Opção inválida! Use -h para ajuda."
+                        help
+                        exit 1
                 ;;
         esac
 }
+#monitorar trafego de rede
+monitoring_network(){
+        echo "Monitorando trafego de rede..."
+        iftop -t -s 10 > report_network.txt
+        echo "relatorio de trafego de rede gerado."
+        send_email "Relatório trafego de rde" "Segue em anexo o relatório" report_network.txt
+}
 
-
+#monitorar uso de recursos do sistema
+monitoring_resources(){
+        echo "Monitorando uso de CPU, memoria e disco..."
+        top -b -n 1 > use_resources.txt
+        echo "Relatorio de uso de recursos gerado."
+        send_email "Relatóriosobre o uso de recursos" "Segue em anexo o relatório" use_resources.txt
+}
 
 #funcao q monitora o consumo de energia
 monitoring_energy(){
@@ -103,88 +114,161 @@ monitoring_energy(){
         #gera um novo relatorio de consumo de energia
         powertop --html=energy_report.html
         echo "relatorio gerado"
-        echo "enviando relatorio para seu email: $EMAIL"
-        send_email "Relatorio de consumo de energia" "Segue em anexo o relatorio"  "energy_report.html"
+        send_email "Relatório de consumo de energia" "Segue em anexo o reatório"  "energy_report.html"
 }
 
-#funcao p automatizar a economia de energia
-economy_energy(){
-        #tempo em segundos
+# Função para automatizar a economia de energia usando loginctl
+economy_energy() {
+        local load_limit=0.1   # Limite de carga do sistema para suspender (padrão: 0.1)
+        local interval=6      # Intervalo de verificação em segundos
+
+        echo "Monitorando carga do sistema. Limite de carga para suspensão: $load_limit."
+        echo "Verificação a cada $interval segundos."
+
         while true; do
-                if  !  w | grep -q "usuario"; then
-                        echo "Sistema inativo. Desligando tela..."
-                        xset dpms force off
-                        echo "Entrando em hibernação..."
-                        systemctl hibernate
+                # Obtém a carga média do sistema (1 minuto)
+                current_load=$(awk '{print $1}' < /proc/loadavg)
+                # Verifica se a carga atual está abaixo do limite definido
+                if (( $(echo "$current_load < $load_limit" | bc -l) )); then
+                        echo "$(date): Sistema com baixa atividade (carga: $current_load)."
+                        echo "Aplicando medidas de economia de energia..."
+                        # Suspender o sistema
+                        echo "Sistema suspenso. Suspendendo..."
+                        systemctl suspend
+
+                        # Após suspensão, aguarda antes de hibernar
+                        echo "Aguardando para hibernação..."
+                        sleep 60
+
+                        # Se a carga continuar baixa após a suspensão, entra em hibernação
+                        current_load=$(awk '{print $1}' < /proc/loadavg)
+                        if (( $(echo "$current_load < $load_limit" | bc -l) )); then
+                                echo "$(date): Sistema ainda com baixa atividade. Entrando em hibernação..."
+                                systemctl hibernate
+                        else
+                                echo "$(date): Sistema reativado após suspensão."
+                        fi
+                else
+                        echo "$(date): Sistema ativo (carga: $current_load)."
                 fi
-                sleep 6 #verificando a cada 60 segundos
+
+                # Espera o intervalo definido antes de verificar novamente
+                sleep "$interval"
         done
+}
+
+#registrar logs
+log_data(){
+    echo "registrando dados..."
+    if [ ! -f "$LOG_FILE" ]; then
+        echo "Timestamp,Consumo_energia,Uso_CPU,Uso_Memoria" > "$LOG_FILE"
+    fi
+
+    # Capturar o consumo de energia a partir do powertop
+    ENERGY_CONSUMPTION=$(powertop --csv | grep -i "W" | grep -o '[0-9.]* W' | head -n 1)
+
+    # Se não encontrar, definir como "N/A"
+    if [ -z "$ENERGY_CONSUMPTION" ]; then
+        ENERGY_CONSUMPTION="consumo energia N/A"
+    fi
+
+    # Capturar o uso de CPU
+    USE_CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
+    if [ -z "$USE_CPU" ]; then
+        USE_CPU="uso cpu N/A"
+    fi
+
+    # Capturar o uso de memória
+    USE_MEMORY=$(free | grep "Mem" | awk '{print $3/$2 * 100.0}')
+    if [ -z "$USE_MEMORY" ]; then
+        USE_MEMORY="uso memoria N/A"
+    fi
+
+    # Registrar os dados no arquivo
+    echo "$(date '+%Y-%m-%d %H:%M:%S'),$ENERGY_CONSUMPTION,$USE_CPU,$USE_MEMORY" >> "$LOG_FILE"
+    echo "dados registrados..."
 }
 
 # Configuração de SMTP para enviar email
 smtp_config(){
-    echo "configurando smtp..."
-    echo "root=lansilvah14fsa@gmail.com" > /etc/ssmtp/ssmtp.conf
-    echo "mailhub=smtp.gmail.com:587" >> /etc/ssmtp/ssmtp.conf
-    echo "AuthUser=lansilvah14fsa@gmail.com" >> /etc/ssmtp/ssmtp.conf
-    echo "AuthPass=cneheauadwxkkqbz" >> /etc/ssmtp/ssmtp.conf
-    echo "UseSTARTTLS=YES" >> /etc/ssmtp/ssmtp.conf # Criptografa a conexão com o servidor SMTP
-    echo "FromLineOverride=YES" >> /etc/ssmtp/ssmtp.conf  # Permite usar o email do campo From
+        echo "configurando smtp..."
+        echo "root=lansilvah14fsa@gmail.com" > /etc/ssmtp/ssmtp.conf
+        echo "mailhub=smtp.gmail.com:587" >> /etc/ssmtp/ssmtp.conf
+        echo "AuthUser=lansilvah14fsa@gmail.com" >> /etc/ssmtp/ssmtp.conf
+        echo "AuthPass=cneheauadwxkkqbz" >> /etc/ssmtp/ssmtp.conf
+        echo "UseSTARTTLS=YES" >> /etc/ssmtp/ssmtp.conf # Criptografa a conexão com o servidor SMTP
+        echo "FromLineOverride=YES" >> /etc/ssmtp/ssmtp.conf  # Permite usar o email do campo From
 }
 
 
 
 # Função para enviar email
 send_email(){
-    local SUBJECT="$1"
-    local BODY="$2"
-    local ATTACHMENT="$3"
-    local REMETENTE="lansilvah14fsa@gmail.com"
+        local SUBJECT="$1"
+        local BODY="$2"
+        local ATTACHMENT="$3"
+        local REMETENTE="lansilvah14fsa@gmail.com"
 
-    # Verifica se o anexo existe
-    if [ -n "$ATTACHMENT" ]; then #verifica se e uma string não vazia
-        if [ -f "$ATTACHMENT" ]; then #verifica se o arquivo existe
-            echo "enviando email..."
-            echo "$BODY" | mail -s "$SUBJECT" -A "$ATTACHMENT" -r "$REMETENTE" "$EMAIL"
+        # Verifica se o anexo existe
+        if [ -n "$ATTACHMENT" ]; then #verifica se e uma string não vazia
+                if [ -f "$ATTACHMENT" ]; then #verifica se o arquivo existe
+                        echo "enviando email..."
+                        echo "$BODY" | mail -s "$SUBJECT" -A "$ATTACHMENT" -r "$REMETENTE" "$EMAIL"
+                else
+                        echo "Erro: O arquivo de anexo '$ATTACHMENT' não existe."
+                        return 1
+                fi
         else
-            echo "Erro: O arquivo de anexo '$ATTACHMENT' não existe."
-            return 1
+                echo "$BODY" | mail -s "$SUBJECT" -r "$REMETENTE" "$EMAIL"
         fi
-    else
-        echo "$BODY" | mail -s "$SUBJECT" -r "$REMETENTE" "$EMAIL"
-    fi
 
-    if [ $? -eq 0 ]; then #verifica se o codigo se saida é iguala a zero (sucesso)
-        echo "Email enviado com sucesso para $EMAIL."
-    else
-        echo "Erro ao enviar o email!"
-    fi
+        if [ $? -eq 0 ]; then #verifica se o codigo se saida é iguala a zero (sucesso)
+                echo "Email enviado com sucesso para $EMAIL."
+        else
+                echo "Erro ao enviar o email!"
+        fi
 }
 
 
 
 #funcao de ajuda
 help(){
-        echo "Resumo e uso do script com parâmetro -h"
-        echo "Projeto de Monitoramento de Consumo de Energia"
-        echo "Uso: $0 [-h] [-e] [--le]"
-        echo "Opções:"
-        echo "  -e    Monitorar consumo de energia"
-        echo "  --le  Ativar modo economia de energia"
+        echo "Projeto de Monitoramento R&R"
         echo "Equipe: [Railan Santana e Raquel Oliveira]"
+        echo "Uso: $0 [-h] [-e] [-r] [-n] [--le]"
+        echo "Opções:"
+        echo "  -h    Resumo e uso do script"
+        echo "  -e    Monitorar consumo de energia"
+        echo "  -r    Monitorar uso de recursos"
+        echo "  -n    Monitorar trafego de rede"
+        echo "  --le  Ativar modo economia de energia"
 }
 
 
 
 main(){
-        if [[ $OPTION_USER == "-h"  ]]; then
+        if [[ $OPTION_USER == "-h"   ]];then
                 help
-                exit 1
+                exit 0
         fi
-        read -p "Digite seu email: " EMAIL
+        if [[ $OPTION_USER != "--le"  ]];then
+                read -p "Digite seu email: " EMAIL
+        fi
+        clear
+        echo "---------- configurando projeto -------------"
         cheks
         smtp_config
+        echo "limpando tela..."
+        sleep 1
+        clear
         process_perform
+        sleep 1
+        clear
+        if [[ $OPTION_USER != "-h" || $OPTION_USER != "--le"  ]];then
+                echo "------------- salvando dados ----------------"
+                log_data
+                echo "---------------------------------------------"
+        fi
 }
 
 main
