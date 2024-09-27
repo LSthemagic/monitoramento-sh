@@ -1,14 +1,14 @@
 #!/bin/bash
 
-#pega o primeiro  flag digitado pelo user
+#pega o segundo(o primeiro e $0) flag digitado pelo user
 OPTION_USER=$1
 EMAIL=""
-LOG_FILE="records_log.csv"
+LOG_FILE="records_log.csv" #arquivo p salvar logs
 #verifica e instala(caso necessario) pacotes necessarios
 check_downloads(){
         echo "Verificando downloads..."
         #sudo apt-get update
-        # Verifica e instala powertop
+        # Verifica e instala powertop (energia)
         if ! command -v powertop &> /dev/null; then
                 echo "Instalando powertop..."
                 sudo apt-get install -y powertop
@@ -17,7 +17,7 @@ check_downloads(){
                 echo "$(command -v powertop)"
         fi
 
-        # Verifica e instala mailutils
+        # Verifica e instala mailutils (email)
         if ! command -v mail &> /dev/null; then
                 echo "Instalando mailutils..."
                 sudo apt-get install -y mailutils
@@ -25,7 +25,7 @@ check_downloads(){
                 echo "mailutils ja instalado"
                 echo "$(command -v mailutils)"
         fi
-
+        #verifica e instala ssmtp (config email)
         if ! command -v ssmtp &> /dev/null; then
                 echo "instalando ssmtp"
                 sudo apt-get install -y ssmtp
@@ -33,7 +33,7 @@ check_downloads(){
                 echo "ssmtp ja instalado"
                 echo "$(command -v ssmtp)"
         fi
-
+        #verifica e instala systemctl (tela eco.)
         if ! command -v systemctl &> /dev/null; then
                 echo "instalando symtemd"
                 sudo apt-get install -y systemd
@@ -41,7 +41,7 @@ check_downloads(){
                 echo "systemd ja instalado"
                 echo "$(command -v systemctl)"
         fi
-
+        #verifica e instala iftop (rede)
         if ! command -v iftop &> /dev/null; then
                 echo "instalando pacote iftop"
                 sudo apt-get install -y iftop
@@ -49,20 +49,19 @@ check_downloads(){
                 echo "iftop ja instalado"
                 echo "$(command -v iftop)"
         fi
-
-}
-
-
-
-cheks(){
-        if [[ $OPTION_USER == "" ]]; then
-                help
-                exit 1
+        #verifica e instala mpstat (recursos)
+        if ! command -v mpstat &> /dev/null; then
+                echo "mpstat não encontrado. Instalando sysstat..."
+                sudo apt-get install -y sysstat
+        else
+                echo "mpstat já está instalado."
+                echo "$(command -v mpstat)"
         fi
-        check_downloads
+
+
 }
 
-
+#chama funcoes p execucao
 process_perform(){
         case "$OPTION_USER" in
                 -e) 
@@ -157,37 +156,48 @@ economy_energy() {
         done
 }
 
-#registrar logs
-log_data(){
-    echo "registrando dados..."
-    if [ ! -f "$LOG_FILE" ]; then
-        echo "Timestamp,Consumo_energia,Uso_CPU,Uso_Memoria" > "$LOG_FILE"
-    fi
+#registrar dados ao executar alguma funcionalidade do codigo (exceto help e eco.de  energia)
+log_data() {
+        echo "Registrando dados..."
 
-    # Capturar o consumo de energia a partir do powertop
-    ENERGY_CONSUMPTION=$(powertop --csv | grep -i "W" | grep -o '[0-9.]* W' | head -n 1)
+        # Verifica se o arquivo de log já existe, caso contrário, cria o cabeçalho
+        if [ ! -f "$LOG_FILE" ]; then
+                echo "Timestamp,Tempo_Atividade,Uso_Memoria,Uso_CPU,Espaco_Disco" > "$LOG_FILE"
+        fi
 
-    # Se não encontrar, definir como "N/A"
-    if [ -z "$ENERGY_CONSUMPTION" ]; then
-        ENERGY_CONSUMPTION="consumo energia N/A"
-    fi
 
-    # Capturar o uso de CPU
-    USE_CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
-    if [ -z "$USE_CPU" ]; then
-        USE_CPU="uso cpu N/A"
-    fi
+        # Captura o tempo de atividade do sistema
+        UPTIME=$(uptime -p | sed "s/,/./g")
+        if [ -z "$UPTIME" ]; then
+                UPTIME="N/A"
+        fi
 
-    # Capturar o uso de memória
-    USE_MEMORY=$(free | grep "Mem" | awk '{print $3/$2 * 100.0}')
-    if [ -z "$USE_MEMORY" ]; then
-        USE_MEMORY="uso memoria N/A"
-    fi
 
-    # Registrar os dados no arquivo
-    echo "$(date '+%Y-%m-%d %H:%M:%S'),$ENERGY_CONSUMPTION,$USE_CPU,$USE_MEMORY" >> "$LOG_FILE"
-    echo "dados registrados..."
+        # Captura o uso de memória
+        USE_MEMORY=$(free | grep "Mem" | awk '{print $3/$2 * 100.0}' | sed "s/,/./g")
+        if [ -z "$USE_MEMORY" ]; then
+                USE_MEMORY="N/A"
+        fi
+
+        # Captura o uso da CPU
+        USE_CPU=$(mpstat 1 1 | awk '/all/ {print 100 - $12}' | sed "s/,/./g" | head -n 1)
+        if [ -z "$USE_CPU" ]; then
+                USE_CPU="N/A"
+        fi
+
+        # Captura o espaço em disco (em % usado)
+        DISK_USAGE=$(df / | grep / | awk '{print $5}')
+        if [ -z "$DISK_USAGE" ]; then
+                DISK_USAGE="N/A"
+        fi
+
+
+        # Registrar os dados no arquivo
+        echo "$(date '+%Y-%m-%d %H:%M:%S'),$UPTIME,$USE_MEMORY,$USE_CPU,$DISK_USAGE" >> "$LOG_FILE"
+        echo "Dados registrados em ${LOG_FILE}..."
+        echo "\"cat ${LOG_FILE}\" para visualizar"
 }
+
 
 # Configuração de SMTP para enviar email
 smtp_config(){
@@ -244,19 +254,29 @@ help(){
         echo "  --le  Ativar modo economia de energia"
 }
 
-
-
-main(){
-        if [[ $OPTION_USER == "-h"   ]];then
+validations(){
+        if [[ $OPTION_USER == "-h" ]];then
                 help
-                exit 0
+                exit 0 #retorno sucess
         fi
+ 
+        if [[ $OPTION_USER == "" ]];then
+                help
+                exit 1 #retorno error
+        fi
+
         if [[ $OPTION_USER != "--le"  ]];then
                 read -p "Digite seu email: " EMAIL
         fi
+}
+
+#funcao principal
+main(){
+        clear
+        validations
         clear
         echo "---------- configurando projeto -------------"
-        cheks
+        check_downloads
         smtp_config
         echo "limpando tela..."
         sleep 1
