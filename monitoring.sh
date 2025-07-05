@@ -202,10 +202,10 @@ log_data() {
 # Configuração de SMTP para enviar email
 smtp_config(){
     	echo "configurando smtp..."
-    	echo "root=lansilvah14fsa@gmail.com" > /etc/ssmtp/ssmtp.conf
+    	echo "root=" > /etc/ssmtp/ssmtp.conf
     	echo "mailhub=smtp.gmail.com:587" >> /etc/ssmtp/ssmtp.conf
-    	echo "AuthUser=lansilvah14fsa@gmail.com" >> /etc/ssmtp/ssmtp.conf
-    	echo "AuthPass=cneheauadwxkkqbz" >> /etc/ssmtp/ssmtp.conf
+    	echo "AuthUser=" >> /etc/ssmtp/ssmtp.conf
+    	echo "AuthPass=" >> /etc/ssmtp/ssmtp.conf
 	echo "UseSTARTTLS=YES" >> /etc/ssmtp/ssmtp.conf # Criptografa a conexão com o servidor SMTP
   	echo "FromLineOverride=YES" >> /etc/ssmtp/ssmtp.conf  # Permite usar o email do campo From
 }
